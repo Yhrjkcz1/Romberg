@@ -44,14 +44,15 @@ def custom_romberg_integration(f, a, b, tol=1e-6):
     max_iters = 20
     romberg_table = []
     errors = []
-    h = b - a
-    romberg_table.append([0.5 * h * (f(a) + f(b))])  # First trapezoidal rule
+    n = 1  # Number of intervals (2^0 = 1 interval initially)
+    first_trap_result = trapezoidal_integration(f, a, b, n=n)
+    romberg_table.append([first_trap_result])
 
     for i in range(1, max_iters):
-        h /= 2
-        # Trapezoidal rule refinement
-        sum_trapezoids = sum(f(a + k * h) for k in range(1, 2 ** i, 2))
-        new_row = [0.5 * romberg_table[i - 1][0] + h * sum_trapezoids]
+        n *= 2  # Double the number of intervals
+        # Use the trapezoidal rule for the current iteration
+        new_trap_result = trapezoidal_integration(f, a, b, n=n)
+        new_row = [new_trap_result]
 
         # Richardson's extrapolation with early stopping
         for k in range(1, i + 1):
@@ -73,71 +74,6 @@ def custom_romberg_integration(f, a, b, tol=1e-6):
             break
 
     return new_row[-1], len(romberg_table), romberg_table, errors
-def custom_romberg_integration_segments(segment_functions, segments, tol=1e-6):
-    """
-    Perform Romberg integration for segmented functions with early stopping.
-    Each segment is integrated separately, and the results are combined.
-
-    Args:
-        segment_functions: List of callable functions for each segment.
-        segments: List of float segment boundaries [a0, a1, ..., an].
-        tol: Tolerance for convergence.
-
-    Returns:
-        total_result: Combined integral result for all segments.
-        total_iters: Total number of iterations across all segments.
-        all_romberg_tables: List of Romberg tables for each segment.
-        all_errors: Combined error list across all segments.
-    """
-    total_result = 0
-    total_iters = 0
-    all_romberg_tables = []
-    all_errors = []
-
-    # Loop through each segment
-    for i in range(len(segments) - 1):
-        f = segment_functions[i]
-        a, b = segments[i], segments[i + 1]
-
-        max_iters = 20
-        romberg_table = []
-        errors = []
-        h = b - a
-        romberg_table.append([0.5 * h * (f(a) + f(b))])  # First trapezoidal rule
-
-        for j in range(1, max_iters):
-            h /= 2
-            # Trapezoidal rule refinement
-            sum_trapezoids = sum(f(a + k * h) for k in range(1, 2 ** j, 2))
-            new_row = [0.5 * romberg_table[j - 1][0] + h * sum_trapezoids]
-
-            # Richardson's extrapolation with early stopping
-            for k in range(1, j + 1):
-                new_value = new_row[k - 1] + (new_row[k - 1] - romberg_table[j - 1][k - 1]) / (4 ** k - 1)
-                new_row.append(new_value)
-
-                # Check for convergence in Richardson extrapolation
-                if abs(new_row[-1] - new_row[-2]) < tol:
-                    print(f"Segment {i + 1}: Converged during Richardson extrapolation at iteration {j}, level {k}")
-                    break
-
-            romberg_table.append(new_row)
-            current_error = abs(new_row[-1] - romberg_table[j - 1][-1])
-            errors.append(current_error)
-
-            # Check for convergence in main loop
-            if current_error < tol:
-                print(f"Segment {i + 1}: Converged during main loop at iteration {j}")
-                break
-
-        # Aggregate results
-        total_result += new_row[-1]
-        total_iters += len(romberg_table)
-        all_romberg_tables.append(romberg_table)
-        all_errors.extend(errors)
-
-    return total_result, total_iters, all_romberg_tables, all_errors
-
 
 def parse_function_input():
     """
@@ -249,9 +185,12 @@ def visualize_integration(segment_functions, segments):
     true_value = 0
     trap_result = []
     simpson_result = []
-    romberg_result = 0
+    romberg_result = []
     romberg_errors = []
     romberg_table = []
+    romberg_error_diff=[]
+    romberg_true_errors=[]
+    h_values = []  # Collect h values here
 
     # Loop through each segment to perform calculations
     for i in range(len(segments) - 1):
@@ -272,27 +211,43 @@ def visualize_integration(segment_functions, segments):
         # Append results for this segment
         trap_result.extend(segment_trap_result)
         simpson_result.extend(segment_simpson_result)
-        romberg_result += segment_romberg_result
+        romberg_result.extend([segment_romberg_result])
         romberg_errors.extend(segment_romberg_errors)
 
         # Merge the segment's romberg_table into the global romberg_table
         romberg_table.extend(segment_romberg_table_segment)
 
+        # Compute and store h values for this segment
+        segment_h_values = [(b - a) / 2 ** j for j in range(1, len(segment_romberg_table_segment) + 1)]
+        h_values.extend(segment_h_values)  # Combine all segment h values
+
     # Calculate true errors
     trap_true_errors = [abs(res - true_value) for res in trap_result]
     simpson_true_errors = [abs(res - true_value) for res in simpson_result]
+    print(romberg_table)
+    for i, row in enumerate(romberg_table):
 
-    # Fix: Correctly calculate Romberg errors based on the last column of each table row
-    romberg_true_errors = []
-    for table in romberg_table:
-        if isinstance(table, list):  # Ensure that each table is a list
-            romberg_true_errors.append(abs(table[-1] - true_value))  # Last column of each row in the table
+        # 计算 difference（对角线元素差的绝对值）
+        if i > 0:
+            error = abs(romberg_table[i][i] - romberg_table[i-1][i-1])
+            romberg_error_diff.extend([error])
 
-    plot_romberg_table(romberg_table, romberg_errors)
+        # 计算 true error（对角线元素与真实值的绝对差）
+        if i < len(row):
+            true_error = abs(romberg_table[i][i] - true_value)
+            romberg_true_errors.extend([true_error])
+    print(romberg_true_errors)
+    print(romberg_error_diff)
+    # Calculate the differences in error for each method
+    trap_error_diff = [abs(trap_true_errors[i] - trap_true_errors[i - 1]) for i in range(1, len(trap_true_errors))]
+    simpson_error_diff = [abs(simpson_true_errors[i] - simpson_true_errors[i - 1]) for i in range(1, len(simpson_true_errors))]
+
+    # Plot the Romberg table with h values
+    plot_romberg_table(romberg_table, romberg_errors, h_values)
 
     # Display results
     print(f"True Value: {true_value:.6f}")
-    print(f"Romberg Result: {romberg_result:.6f}")
+    # print(f"Romberg Result: {romberg_result:.6f}")
     print("Romberg Errors:")
     for i, error in enumerate(romberg_errors, start=1):
         print(f"Iteration {i}: Error = {error:.6e}")
@@ -301,14 +256,14 @@ def visualize_integration(segment_functions, segments):
     fig, ax = plt.subplots(1, 3, figsize=(16, 6))
 
     # Left: Error Convergence (Line Chart)
-    ax[0].plot(range(1, len(trap_true_errors) + 1), trap_true_errors, label="Trapezoidal True Error", color='orange',
+    ax[0].plot(range(1, len(trap_error_diff) + 1), trap_error_diff, label="Trapezoidal Difference", color='orange',
                linestyle='-.')
-    ax[0].plot(range(1, len(simpson_true_errors) + 1), simpson_true_errors, label="Simpson True Error", color='green',
+    ax[0].plot(range(1, len(simpson_error_diff) + 1), simpson_error_diff, label="Simpson Difference", color='green',
                linestyle='--')
-    ax[0].plot(range(1, len(romberg_true_errors) + 1), romberg_true_errors, label="Romberg True Error", color='blue')
+    ax[0].plot(range(1, len(romberg_error_diff) + 1), romberg_error_diff, label="Romberg Difference", color='blue')
     ax[0].set_xlabel("Iteration")
-    ax[0].set_ylabel("Error")
-    ax[0].set_title("Error Convergence Relative to True Value")
+    ax[0].set_ylabel("Difference")
+    ax[0].set_title("Difference Convergence of each iteration")
     ax[0].legend()
 
     # Middle: Integral Region Visualization
@@ -339,58 +294,53 @@ def visualize_integration(segment_functions, segments):
     plt.tight_layout()
     plt.show()
 
+import matplotlib.pyplot as plt
 
-def plot_romberg_table(romberg_table, romberg_errors):
+def plot_romberg_table(romberg_table, romberg_errors, h_values):
     """
-    Plot Romberg table as a simple table with values and errors.
-
-    Args:
-        romberg_table: List of lists, where each inner list is a row of the Romberg table.
-        romberg_errors: List of errors corresponding to each row in the Romberg table.
+    Plot Romberg table with values, errors, and h values, adding iteration labels automatically.
+    Prevent overlap by dynamically adjusting figure and cell sizes.
     """
     # Determine the maximum number of columns
     max_cols = max(len(row) for row in romberg_table)
 
     # Prepare headers for the table
-    headers = ["Iteration"] + [f"T_{j}" for j in range(max_cols)] + ["Error"]
+    headers = ["Iteration", "h"] + [f"T_{j}" for j in range(max_cols)] + ["Error"]
 
     # Prepare table content
     table_data = []
-    for i, (row, error) in enumerate(zip(romberg_table, romberg_errors), start=1):
-        # Format each row while handling incompatible elements
-        padded_row = []
-        for val in row:
-            try:
-                # Attempt to format as float
-                padded_row.append(f"{float(val):.6f}")
-            except (ValueError, TypeError):
-                # If formatting fails, add placeholder
-                padded_row.append("N/A")
-
-        # Pad the row to match the maximum number of columns
+    for i, (h, row, error) in enumerate(zip(h_values, romberg_table, romberg_errors)):
+        iteration_label = f"Iteration {i + 1}"
+        padded_row = [f"{float(val):.6f}" if val is not None else "N/A" for val in row]
         padded_row += [""] * (max_cols - len(padded_row))
-
-        # Add iteration label and error column
-        row_data = [f"Iter {i}"] + padded_row + [f"{error:.2e}"]
+        row_data = [iteration_label, f"{h:.6f}"] + padded_row + [f"{error:.2e}"]
         table_data.append(row_data)
 
-    # Plot the table
-    fig, ax = plt.subplots(figsize=(12, len(romberg_table) + 2))  # Adjust height based on number of rows
+    # Dynamically adjust figure size based on data
+    num_rows = len(table_data) + 1  # Add 1 for headers
+    num_cols = len(headers)
+    fig_width = min(20, num_cols * 1.2)  # Scale width per column
+    fig_height = min(10, num_rows * 0.5)  # Scale height per row
+
+    # Plot the table with adjusted size
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     ax.axis("tight")
     ax.axis("off")
     table = ax.table(cellText=table_data, colLabels=headers, cellLoc="center", loc="center")
 
-    # Adjust table font size and layout
+    # Adjust table scaling and font
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.auto_set_column_width(col=list(range(len(headers))))
+    table.set_fontsize(10)  # Reduce font size if necessary
+    table.scale(1.1, 1.1)  # Adjust table scaling to fit better
+
+    # Optional: Adjust column widths
+    for i in range(num_cols):
+        table.auto_set_column_width([i])
 
     # Add title
-    plt.title("Romberg Integration Table", fontsize=14, pad=20)
-    plt.tight_layout()
+    plt.title("Romberg Integration Table with Iterations and Step Sizes", fontsize=12, pad=10)
+    plt.tight_layout(pad=1.5)
     plt.show()
-
-
 
 def validate_input(f, func_str):
 
