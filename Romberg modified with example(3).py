@@ -4,88 +4,84 @@ from concurrent.futures import ThreadPoolExecutor
 from scipy.integrate import simpson
 import re
 from scipy.integrate import quad
+import sympy as sp
 
 
 # Trapezoidal integration
-def trapezoidal_integration(f, a, b, n=100):
+def trapezoidal_integration(f, a, b, n=100, singular=None, epsilon=1e-6):
     x = np.linspace(a, b, n + 1)
+    # 替换奇点
+    if singular is not None:
+        for s in singular:
+            x = np.where(np.isclose(x, s, atol=epsilon), s + epsilon, x)
     y = f(x)
     return np.trapz(y, x)
 
 
 # Simpson's integration
-def simpson_integration(f, a, b, n=100):
+def simpson_integration(f, a, b, n=100, singular=None, epsilon=1e-6):
     x = np.linspace(a, b, n + 1)
+    # 替换奇点
+    if singular is not None:
+        for s in singular:
+            x = np.where(np.isclose(x, s, atol=epsilon), s + epsilon, x)
     y = f(x)
     return simpson(y, x=x)
 
-# Modified trapezoidal integration to handle segmented functions
-def trapezoidal_integration_segments(segment_functions, segments, n=100):
-    total_result = 0
-    for i in range(len(segments) - 1):
-        f_segment = segment_functions[i]
-        a, b = segments[i], segments[i + 1]
-        total_result += trapezoidal_integration(f_segment, a, b, n)
-    return total_result
 
-# Modified Simpson's integration to handle segmented functions
-def simpson_integration_segments(segment_functions, segments, n=100):
-    total_result = 0
-    for i in range(len(segments) - 1):
-        f_segment = segment_functions[i]
-        a, b = segments[i], segments[i + 1]
-        total_result += simpson_integration(f_segment, a, b, n)
-    return total_result
-def custom_romberg_integration(f, a, b, tol=1e-6):
-    """
-    Perform Romberg integration with early stopping during both the main iteration
-    and the Richardson extrapolation phase.
-    """
+def custom_romberg_integration(f, a, b, tol=1e-6, singular=None, epsilon=1e-6):
     max_iters = 20
     romberg_table = []
     errors = []
     n = 1  # Number of intervals (2^0 = 1 interval initially)
-    first_trap_result = trapezoidal_integration(f, a, b, n=n)
+
+    # Modify trapezoidal integration to handle singular
+    def adjusted_trapezoidal_integration(f, a, b, n):
+        x = np.linspace(a, b, n + 1)
+        if singular is not None:
+            for s in singular:
+                x = np.where(np.isclose(x, s, atol=epsilon), s + epsilon, x)
+        y = f(x)
+        return np.trapz(y, x)
+
+    first_trap_result = adjusted_trapezoidal_integration(f, a, b, n=n)
     romberg_table.append([first_trap_result])
 
     for i in range(1, max_iters):
         n *= 2  # Double the number of intervals
         # Use the trapezoidal rule for the current iteration
-        new_trap_result = trapezoidal_integration(f, a, b, n=n)
+        new_trap_result = adjusted_trapezoidal_integration(f, a, b, n=n)
         new_row = [new_trap_result]
 
-        # Richardson's extrapolation with early stopping
+        # Richardson's extrapolation
         for k in range(1, i + 1):
             new_value = new_row[k - 1] + (new_row[k - 1] - romberg_table[i - 1][k - 1]) / (4 ** k - 1)
             new_row.append(new_value)
-
-            # # Check for convergence in Richardson extrapolation
-            # if abs(new_row[-1] - new_row[-2]) < tol:
-            #     print(f"Converged during Richardson extrapolation at iteration {i}, level {k}")
-            #     break
 
         romberg_table.append(new_row)
         current_error = abs(new_row[-1] - romberg_table[i - 1][-1])
         errors.append(current_error)
 
-        # Check for convergence in main loop
+        # Check for convergence
         if current_error < tol:
             print(f"Converged during main loop at iteration {i}")
             break
 
     return new_row[-1], len(romberg_table), romberg_table, errors
 
+
 def parse_function_input():
     """
     Parses user input to define a mathematical function,
     identifies singular points or discontinuities,
-    and prepares segmented functions and intervals if necessary.
+    and prepares for singularity handling.
 
     Returns:
-        segment_functions: List of callable functions for each segment.
-        segments: List of interval boundaries defining segments.
+        f: Callable function for the input.
+        singular_points: List of detected singular points.
         func_str: String representation of the original input function.
     """
+    
     allowed_functions = {
         "sin": "np.sin",
         "cos": "np.cos",
@@ -101,10 +97,7 @@ def parse_function_input():
         try:
             # Prompt the user for the function
             func_str = input("Enter a function f(x) (e.g., 'sin(x)', 'x**2 + exp(x)', 'sqrt(x) + log(x)'):\n>> ")
-
-            # Ensure multiplication is explicit between constants and variables
-            func_str = func_str.replace(")(", ")*(")
-            func_str = func_str.replace("x(", "x*(")
+            func_str = func_str.replace(")(", ")*(").replace("x(", "x*(")
 
             # Replace allowed functions with their numpy equivalents
             for func, np_func in allowed_functions.items():
@@ -118,41 +111,15 @@ def parse_function_input():
             # Validate the bounds
             a = get_float_input("Enter the lower bound a:\n>> ")
             b = get_float_input("Enter the upper bound b:\n>> ")
-
+            x = sp.symbols('x')
+            singular_points=[]
             # Detect singularities or discontinuities in the interval
-            singular_points = []
-            test_points = np.linspace(a, b, 1000)  # Fine sampling of the interval
-            for x in test_points:
-                try:
-                    _ = f(x)  # Test function evaluation
-                except:
-                    singular_points.append(x)
-
-            # Remove duplicate singularities and sort them
-            singular_points = sorted(set(singular_points))
+            singular_points = detect_singularities_combined(func_str, f, a, b, x, tol=1e-3, num_points=10000)
 
             if singular_points:
                 print(f"Detected singular points or discontinuities within [{a}, {b}]: {singular_points}")
 
-                # Create segments
-                segments = [a] + singular_points + [b]
-                print(f"The integral will be divided into {len(segments) - 1} segments: {segments}")
-
-                # Define segment-specific functions
-                segment_functions = []
-                for i in range(len(segments) - 1):
-                    x_start, x_end = segments[i], segments[i + 1]
-
-                    # Create a piecewise function valid in each segment
-                    segment_functions.append(
-                        lambda x, f=f, x_start=x_start, x_end=x_end: f(x) if x_start <= x <= x_end else 0
-                    )
-
-                return segment_functions, segments, func_str
-
-            else:
-                # No singularities: treat as a single segment
-                return [f], [a, b], func_str
+            return f, singular_points, func_str,a,b
 
         except KeyboardInterrupt:
             print("\nInput was interrupted. Please try again.")
@@ -162,6 +129,111 @@ def parse_function_input():
             print(f"Invalid input. Please try again. Error: {e}\n")
             print("Hint: Ensure the function uses 'x' as the variable and valid math syntax.\n")
             continue
+
+    
+
+def convert_numpy_to_sympy(expr_str):
+    """
+    将 NumPy 函数替换为 SymPy 函数，以便解析
+    :param expr_str: 包含 NumPy 函数的字符串表达式
+    :return: 替换后的字符串
+    """
+    # NumPy 和 SymPy 函数映射
+    numpy_to_sympy = {
+        'np.log': 'log',
+        'np.sqrt': 'sqrt',
+        'np.exp': 'exp',
+        'np.sin': 'sin',
+        'np.cos': 'cos',
+        'np.tan': 'tan',
+    }
+    
+    for numpy_func, sympy_func in numpy_to_sympy.items():
+        expr_str = re.sub(r'\b' + re.escape(numpy_func) + r'\b', sympy_func, expr_str)
+    return expr_str
+def detect_singularities_sympy(func_input, x):
+    """
+    使用 SymPy 检测函数的符号奇点
+    :param func_input: 输入的符号表达式 (字符串)
+    :param x: 变量符号
+    :return: 奇点列表
+    """
+    # 替换 NumPy 函数为 SymPy 函数
+    func_input = convert_numpy_to_sympy(func_input)
+
+    # 尝试解析输入的符号函数
+    try:
+        func = sp.sympify(func_input)
+    except sp.SympifyError:
+        raise ValueError(f"无法解析的符号表达式: {func_input}")
+    
+    singularities = set()
+
+    # 检测分母为零的情况
+    if func.is_rational_function(x):
+        denominator = sp.denom(func)
+        result = sp.solveset(denominator, x, domain=sp.S.Reals)
+        singularities.update(_extract_discrete_points(result))
+    
+    # 检测 log 的定义域限制
+    if func.has(sp.log):
+        log_args = func.atoms(sp.log)
+        for log_expr in log_args:
+            arg = log_expr.args[0]
+            result = sp.solveset(arg <= 0, x, domain=sp.S.Reals)
+            singularities.update(_extract_discrete_points(result))
+    
+    # 检测 sqrt 的定义域限制
+    if func.has(sp.sqrt):
+        sqrt_args = func.atoms(sp.sqrt)
+        for sqrt_expr in sqrt_args:
+            arg = sqrt_expr.args[0]
+            result = sp.solveset(arg < 0, x, domain=sp.S.Reals)
+            singularities.update(_extract_discrete_points(result))
+
+    # 检测更复杂的奇点
+    try:
+        result = sp.singularities(func, x)
+        singularities.update(_extract_discrete_points(result))
+    except NotImplementedError:
+        pass
+
+    # 仅返回实数奇点
+    real_singularities = [s for s in singularities if s.is_real]
+    return sorted(real_singularities)
+
+def _extract_discrete_points(result):
+    """
+    从 SymPy 的结果中提取离散点
+    :param result: SymPy 结果（可能是 FiniteSet、Interval 等）
+    :return: 离散点集合
+    """
+    if isinstance(result, sp.FiniteSet):
+        return result
+    elif isinstance(result, sp.Interval):
+        # 对于区间，不返回离散点
+        return set()
+    else:
+        return set()
+
+def detect_singularities_combined(func_input, f, a, b, x, tol=1e-3, num_points=10000):
+    """
+    结合符号方法和数值方法来检测奇点
+    :param func_input: 函数的符号输入 (字符串)
+    :param f: 函数对象 (lambda 函数)
+    :param a: 区间起点
+    :param b: 区间终点
+    :param x: 符号变量
+    :param tol: 检测的变化阈值
+    :param num_points: 检测点数量
+    :return: 奇点列表
+    """
+    # 先使用 sympy 检测符号奇点
+    print("func_input:",func_input)
+    print("f:",f)
+    sympy_singularities = detect_singularities_sympy(func_input, x)
+    
+    return sympy_singularities
 
 
 def get_float_input(prompt):
@@ -173,7 +245,7 @@ def get_float_input(prompt):
             print("Invalid input. Please enter a number.")
 
 
-def visualize_integration(segment_functions, segments):
+def visualize_integration(segment_functions, singular,a,b):
     """
     Visualize integration results for segmented functions.
 
@@ -181,6 +253,7 @@ def visualize_integration(segment_functions, segments):
         segment_functions: List of callable functions for each segment.
         segments: List of float segment boundaries [a0, a1, ..., an].
     """
+    print("singular points:",singular)
     # Initialize results
     true_value = 0
     trap_result = []
@@ -191,40 +264,38 @@ def visualize_integration(segment_functions, segments):
     romberg_error_diff=[]
     romberg_true_errors=[]
     h_values = []  # Collect h values here
-
+    epsilon = 1e-4  
     # Loop through each segment to perform calculations
-    for i in range(len(segments) - 1):
-        f = segment_functions[i]
-        a, b = segments[i], segments[i + 1]
+    f = segment_functions
+    # Compute true value using quad
+    singular_list = [float(x) for x in singular]
+    segment_true_value, _ = quad(f, a, b,points=singular_list)
+    true_value += segment_true_value
 
-        # Compute true value using quad
-        segment_true_value, _ = quad(f, a, b)
-        true_value += segment_true_value
+    # Perform integration using different methods
+    segment_trap_result = [trapezoidal_integration(f, a, b, n=2 ** j,singular=singular_list, epsilon=epsilon) for j in range(1, 11)]
+    segment_simpson_result = [simpson_integration(f, a, b, n=2 ** j,singular=singular_list, epsilon=epsilon) for j in range(1, 11)]
+    segment_romberg_result, _, segment_romberg_table_segment, segment_romberg_errors = custom_romberg_integration(
+        f, a, b, tol=1e-6,singular=singular_list, epsilon=epsilon
+    )
 
-        # Perform integration using different methods
-        segment_trap_result = [trapezoidal_integration(f, a, b, n=2 ** j) for j in range(1, 11)]
-        segment_simpson_result = [simpson_integration(f, a, b, n=2 ** j) for j in range(1, 11)]
-        segment_romberg_result, _, segment_romberg_table_segment, segment_romberg_errors = custom_romberg_integration(
-            f, a, b, tol=1e-6
-        )
+    # Append results for this segment
+    trap_result.extend(segment_trap_result)
+    simpson_result.extend(segment_simpson_result)
+    romberg_result.extend([segment_romberg_result])
+    romberg_errors.extend(segment_romberg_errors)
 
-        # Append results for this segment
-        trap_result.extend(segment_trap_result)
-        simpson_result.extend(segment_simpson_result)
-        romberg_result.extend([segment_romberg_result])
-        romberg_errors.extend(segment_romberg_errors)
+    # Merge the segment's romberg_table into the global romberg_table
+    romberg_table.extend(segment_romberg_table_segment)
 
-        # Merge the segment's romberg_table into the global romberg_table
-        romberg_table.extend(segment_romberg_table_segment)
-
-        # Compute and store h values for this segment
-        segment_h_values = [(b - a) / 2 ** j for j in range(1, len(segment_romberg_table_segment) + 1)]
-        h_values.extend(segment_h_values)  # Combine all segment h values
+    # Compute and store h values for this segment
+    segment_h_values = [(b - a) / 2 ** j for j in range(1, len(segment_romberg_table_segment) + 1)]
+    h_values.extend(segment_h_values)  # Combine all segment h values
 
     # Calculate true errors
     trap_true_errors = [abs(res - true_value) for res in trap_result]
     simpson_true_errors = [abs(res - true_value) for res in simpson_result]
-    print(romberg_table)
+    # print(romberg_table)
     for i, row in enumerate(romberg_table):
 
         # 计算 difference（对角线元素差的绝对值）
@@ -236,8 +307,8 @@ def visualize_integration(segment_functions, segments):
         if i < len(row):
             true_error = abs(romberg_table[i][i] - true_value)
             romberg_true_errors.extend([true_error])
-    print(romberg_true_errors)
-    print(romberg_error_diff)
+    # print(romberg_true_errors)
+    # print(romberg_error_diff)
     # Calculate the differences in error for each method
     trap_error_diff = [abs(trap_true_errors[i] - trap_true_errors[i - 1]) for i in range(1, len(trap_true_errors))]
     simpson_error_diff = [abs(simpson_true_errors[i] - simpson_true_errors[i - 1]) for i in range(1, len(simpson_true_errors))]
@@ -245,12 +316,12 @@ def visualize_integration(segment_functions, segments):
     # Plot the Romberg table with h values
     plot_romberg_table(romberg_table, romberg_errors, h_values)
 
-    # Display results
-    print(f"True Value: {true_value:.6f}")
-    # print(f"Romberg Result: {romberg_result:.6f}")
-    print("Romberg Errors:")
-    for i, error in enumerate(romberg_errors, start=1):
-        print(f"Iteration {i}: Error = {error:.6e}")
+    # # Display results
+    # print(f"True Value: {true_value:.6f}")
+    # # print(f"Romberg Result: {romberg_result:.6f}")
+    # print("Romberg Errors:")
+    # # for i, error in enumerate(romberg_errors, start=1):
+    # #     print(f"Iteration {i}: Error = {error:.6e}")
 
     # Create a figure with subplots for error convergence and other visualizations
     fig, ax = plt.subplots(1, 3, figsize=(16, 6))
@@ -267,12 +338,10 @@ def visualize_integration(segment_functions, segments):
     ax[0].legend()
 
     # Middle: Integral Region Visualization
-    for i in range(len(segments) - 1):
-        a, b = segments[i], segments[i + 1]
-        x = np.linspace(a, b, 500)
-        y = segment_functions[i](x)
-        ax[1].plot(x, y, label=f"f(x) Segment {i + 1}", linestyle='-', alpha=0.7)
-        ax[1].fill_between(x, y, where=[(a <= xi <= b) for xi in x], alpha=0.3)
+    x = np.linspace(a, b, 500)
+    y = segment_functions(x)
+    ax[1].plot(x, y, label=f"f(x)", linestyle='-', alpha=0.7)
+    ax[1].fill_between(x, y, where=[(a <= xi <= b) for xi in x], alpha=0.3)
 
     ax[1].set_xlabel("x")
     ax[1].set_ylabel("f(x)")
@@ -294,7 +363,6 @@ def visualize_integration(segment_functions, segments):
     plt.tight_layout()
     plt.show()
 
-import matplotlib.pyplot as plt
 
 def plot_romberg_table(romberg_table, romberg_errors, h_values):
     """
@@ -401,8 +469,8 @@ def validate_input(f, func_str):
 if __name__ == "__main__":
     print("Welcome to the Integration Calculator!")
     print("Supported functions: sin, cos, tan, exp, log, sqrt, pi, e")
-    segment_functions, segments, func_str= parse_function_input()  # Get the function from user
-    visualize_integration(segment_functions, segments)
+    functions, singular, func_str,a,b= parse_function_input()  # Get the function from user
+    visualize_integration(functions, singular,a,b)
 
 def simpson_romberg_integration(f, a, b, tol=1e-6, max_iter=20):
     """
