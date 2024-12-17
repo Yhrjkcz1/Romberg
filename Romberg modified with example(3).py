@@ -1,27 +1,23 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from concurrent.futures import ThreadPoolExecutor
 from scipy.integrate import simpson
 import re
 from scipy.integrate import quad
 import sympy as sp
-
+import math
 
 # Trapezoidal integration
 def trapezoidal_integration(f, a, b, n=100, singular=None, epsilon=1e-6):
     x = np.linspace(a, b, n + 1)
-    # 替换奇点
     if singular is not None:
         for s in singular:
             x = np.where(np.isclose(x, s, atol=epsilon), s + epsilon, x)
     y = f(x)
     return np.trapz(y, x)
 
-
 # Simpson's integration
 def simpson_integration(f, a, b, n=100, singular=None, epsilon=1e-6):
     x = np.linspace(a, b, n + 1)
-    # 替换奇点
     if singular is not None:
         for s in singular:
             x = np.where(np.isclose(x, s, atol=epsilon), s + epsilon, x)
@@ -130,15 +126,13 @@ def parse_function_input():
             print("Hint: Ensure the function uses 'x' as the variable and valid math syntax.\n")
             continue
 
-    
-
 def convert_numpy_to_sympy(expr_str):
     """
-    将 NumPy 函数替换为 SymPy 函数，以便解析
-    :param expr_str: 包含 NumPy 函数的字符串表达式
-    :return: 替换后的字符串
+    Replaces NumPy functions with SymPy functions for parsing.
+    :param expr_str: A string expression containing NumPy functions.
+    :return: The modified string with NumPy functions replaced by SymPy functions.
     """
-    # NumPy 和 SymPy 函数映射
+    # Mapping between NumPy functions and SymPy functions
     numpy_to_sympy = {
         'np.log': 'log',
         'np.sqrt': 'sqrt',
@@ -151,31 +145,32 @@ def convert_numpy_to_sympy(expr_str):
     for numpy_func, sympy_func in numpy_to_sympy.items():
         expr_str = re.sub(r'\b' + re.escape(numpy_func) + r'\b', sympy_func, expr_str)
     return expr_str
+
 def detect_singularities_sympy(func_input, x):
     """
-    使用 SymPy 检测函数的符号奇点
-    :param func_input: 输入的符号表达式 (字符串)
-    :param x: 变量符号
-    :return: 奇点列表
+    Detects symbolic singularities of a function using SymPy.
+    :param func_input: The input symbolic expression (as a string).
+    :param x: The symbol representing the variable.
+    :return: A list of singularities.
     """
-    # 替换 NumPy 函数为 SymPy 函数
+    # Replace NumPy functions with SymPy functions
     func_input = convert_numpy_to_sympy(func_input)
 
-    # 尝试解析输入的符号函数
+    # Try to parse the input symbolic function
     try:
         func = sp.sympify(func_input)
     except sp.SympifyError:
-        raise ValueError(f"无法解析的符号表达式: {func_input}")
+        raise ValueError(f"Unable to parse the symbolic expression: {func_input}")
     
     singularities = set()
 
-    # 检测分母为零的情况
+    # Check for cases where the denominator is zero (rational functions)
     if func.is_rational_function(x):
         denominator = sp.denom(func)
         result = sp.solveset(denominator, x, domain=sp.S.Reals)
         singularities.update(_extract_discrete_points(result))
     
-    # 检测 log 的定义域限制
+    # Check for domain restrictions of logarithmic functions (log(x) domain: x > 0)
     if func.has(sp.log):
         log_args = func.atoms(sp.log)
         for log_expr in log_args:
@@ -183,7 +178,7 @@ def detect_singularities_sympy(func_input, x):
             result = sp.solveset(arg <= 0, x, domain=sp.S.Reals)
             singularities.update(_extract_discrete_points(result))
     
-    # 检测 sqrt 的定义域限制
+    # Check for domain restrictions of square root functions (sqrt(x) domain: x >= 0)
     if func.has(sp.sqrt):
         sqrt_args = func.atoms(sp.sqrt)
         for sqrt_expr in sqrt_args:
@@ -191,58 +186,75 @@ def detect_singularities_sympy(func_input, x):
             result = sp.solveset(arg < 0, x, domain=sp.S.Reals)
             singularities.update(_extract_discrete_points(result))
 
-    # 检测更复杂的奇点
+    # Check for more complex singularities (e.g., poles, branch points)
     try:
         result = sp.singularities(func, x)
         singularities.update(_extract_discrete_points(result))
     except NotImplementedError:
         pass
 
-    # 仅返回实数奇点
+    # Only return real singularities
     real_singularities = [s for s in singularities if s.is_real]
     return sorted(real_singularities)
 
 def _extract_discrete_points(result):
     """
-    从 SymPy 的结果中提取离散点
-    :param result: SymPy 结果（可能是 FiniteSet、Interval 等）
-    :return: 离散点集合
+    Extracts discrete points from the result of a SymPy set.
+    :param result: SymPy result (could be FiniteSet, Interval, etc.)
+    :return: A set of discrete points.
     """
     if isinstance(result, sp.FiniteSet):
         return result
     elif isinstance(result, sp.Interval):
-        # 对于区间，不返回离散点
+        # For intervals, we do not return discrete points
         return set()
     else:
         return set()
 
+
 def detect_singularities_combined(func_input, f, a, b, x, tol=1e-3, num_points=10000):
     """
-    结合符号方法和数值方法来检测奇点
-    :param func_input: 函数的符号输入 (字符串)
-    :param f: 函数对象 (lambda 函数)
-    :param a: 区间起点
-    :param b: 区间终点
-    :param x: 符号变量
-    :param tol: 检测的变化阈值
-    :param num_points: 检测点数量
-    :return: 奇点列表
+    Combines symbolic and numerical methods to detect singularities.
+    :param func_input: The symbolic input of the function (as a string).
+    :param f: The function object (lambda function).
+    :param a: The start point of the interval.
+    :param b: The end point of the interval.
+    :param x: The symbolic variable.
+    :param tol: The tolerance for detecting changes.
+    :param num_points: The number of points used for numerical detection.
+    :return: A list of singularities.
     """
-    # 先使用 sympy 检测符号奇点
-    print("func_input:",func_input)
-    print("f:",f)
+    # First, use SymPy to detect symbolic singularities
+    print("func_input:", func_input)
+    print("f:", f)
     sympy_singularities = detect_singularities_sympy(func_input, x)
     
     return sympy_singularities
 
-
 def get_float_input(prompt):
+    """
+    Gets a floating-point number from the user, supporting special values like pi, e, inf, etc.
+    :param prompt: The prompt message for user input.
+    :return: The floating-point number or the numerical representation of a special value.
+    """
+    special_values = {
+        "pi": float("3.1415926535"),  # The floating-point value of π
+        "e": float("2.71828182"),    # The floating-point value of Euler's number e
+        "inf": float("inf"),          # Positive infinity
+        "-inf": float("-inf")         # Negative infinity
+    }
+
     while True:
+        user_input = input(prompt).strip().lower()
+        # Try to match special values
+        if user_input in special_values:
+            return special_values[user_input]
         try:
-            value = float(input(prompt))
+            # Convert to float
+            value = float(user_input)
             return value
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            print(f"Invalid input. Please enter a number or a special value (e.g., {', '.join(special_values.keys())}).")
 
 
 def visualize_integration(segment_functions, singular,a,b):
@@ -264,7 +276,7 @@ def visualize_integration(segment_functions, singular,a,b):
     romberg_error_diff=[]
     romberg_true_errors=[]
     h_values = []  # Collect h values here
-    epsilon = 1e-4  
+    epsilon = 1e-4
     # Loop through each segment to perform calculations
     f = segment_functions
     # Compute true value using quad
@@ -315,13 +327,18 @@ def visualize_integration(segment_functions, singular,a,b):
 
     # Plot the Romberg table with h values
     plot_romberg_table(romberg_table, romberg_errors, h_values)
-
-    # # Display results
-    # print(f"True Value: {true_value:.6f}")
-    # # print(f"Romberg Result: {romberg_result:.6f}")
+    
+    # Display results
+    print("True Value:",true_value)
+    for i in range(min(len(romberg_true_errors), len(trap_true_errors), len(simpson_true_errors))):
+        print(f"Iteration {i + 1}")
+        print(f"  Romberg error: {romberg_true_errors[i]:.6e}")
+        print(f"  Trapezoidal error: {trap_true_errors[i]:.6e}")
+        print(f"  Simpson error: {simpson_true_errors[i]:.6e}")
+        print() 
     # print("Romberg Errors:")
-    # # for i, error in enumerate(romberg_errors, start=1):
-    # #     print(f"Iteration {i}: Error = {error:.6e}")
+    # for i, error in enumerate(romberg_errors, start=1):
+    #     print(f"Iteration {i}: Error = {error:.6e}")
 
     # Create a figure with subplots for error convergence and other visualizations
     fig, ax = plt.subplots(1, 3, figsize=(16, 6))
@@ -410,95 +427,8 @@ def plot_romberg_table(romberg_table, romberg_errors, h_values):
     plt.tight_layout(pad=1.5)
     plt.show()
 
-def validate_input(f, func_str):
-
-    def extract_conditions(func_str):
-        conditions = []
-
-        # Match patterns for log(x), log(sin(x)), sqrt(x), and division
-        log_matches = re.finditer(r"log\(([^()]+|[^()]*\([^()]*\)[^()]*)\)", func_str)
-        sqrt_matches = re.finditer(r"sqrt\(([^()]+|[^()]*\([^()]*\)[^()]*)\)", func_str)
-        division_matches = re.finditer(r"/\(([^()]+|[^()]*\([^()]*\)[^()]*)\)", func_str)
-
-        for match in log_matches:
-            arg = match.group(1).strip()
-            conditions.append(f"({arg}) > 0")  # log requires arg > 0
-
-        for match in sqrt_matches:
-            arg = match.group(1).strip()
-            conditions.append(f"({arg}) >= 0")  # sqrt requires arg >= 0
-
-        for match in division_matches:
-            arg = match.group(1).strip()
-            conditions.append(f"({arg}) != 0")  # Denominator cannot be zero
-
-        return conditions
-
-    # Extract domain conditions
-    domain_conditions = extract_conditions(func_str)
-    if domain_conditions:
-        print(f"Detected domain constraints: {', '.join(domain_conditions)}")
-
-    while True:
-        try:
-            # Get integration limits from the user
-            a = float(input("Enter the lower limit of integration (a): "))
-            b = float(input("Enter the upper limit of integration (b): "))
-
-            # Check all domain constraints for both a and b
-            invalid = False
-            for condition in domain_conditions:
-                # Replace 'x' in the condition with the current limit
-                condition_a = condition.replace('x', str(a))
-                condition_b = condition.replace('x', str(b))
-
-                # Evaluate the condition dynamically
-                if not eval(condition_a) or not eval(condition_b):
-                    print(f"Invalid input: {condition} not satisfied for a={a} or b={b}. Please try again.")
-                    invalid = True
-                    break
-
-            if not invalid:
-                return a, b  # If all checks pass, return the valid limits
-
-        except ValueError:
-            print("Invalid input. Please enter numeric values for a and b.\n")
-        except Exception as e:
-            print(f"Unexpected error: {e}. Please check your input and try again.\n")
-
 if __name__ == "__main__":
     print("Welcome to the Integration Calculator!")
     print("Supported functions: sin, cos, tan, exp, log, sqrt, pi, e")
     functions, singular, func_str,a,b= parse_function_input()  # Get the function from user
     visualize_integration(functions, singular,a,b)
-
-def simpson_romberg_integration(f, a, b, tol=1e-6, max_iter=20):
-    """
-    Perform Romberg integration using Simpson's rule as the base method.
-    """
-    R = np.zeros((max_iter, max_iter))
-
-    # Compute R[0, 0] using Simpson's rule with 2 intervals (n=2)
-    R[0, 0] = simpson_integration(f, a, b, n=2)
-    errors = []
-
-    for i in range(1, max_iter):
-        # Double the number of intervals for Simpson's rule
-        n_intervals = 2 ** (i + 1)
-        R[i, 0] = simpson_integration(f, a, b, n=n_intervals)
-
-        # Perform Richardson extrapolation
-        for j in range(1, i + 1):
-            R[i, j] = (4 ** j * R[i, j - 1] - R[i - 1, j - 1]) / (4 ** j - 1)
-
-        # Compute error
-        current_error = abs(R[i, i] - R[i - 1, i - 1])
-        errors.append(current_error)
-
-        # Check for convergence
-        if current_error < tol:
-            return R[i, i], i + 1, R[:i + 1, :i + 1], errors
-
-    # Return the final result if maximum iterations are reached
-    return R[max_iter - 1, max_iter - 1], max_iter, R, errors
-
